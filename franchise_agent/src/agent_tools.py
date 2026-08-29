@@ -41,6 +41,10 @@ def get_chat_model() -> ChatOpenAI:
         api_key=OPENAI_API_KEY,
         use_responses_api=True,
         reasoning={"effort": "low"},
+        # 매 질문 응답마다 전체 대화가 재전송되는 구조라(graph.py 주석 참고) 짧은 시간에
+        # 여러 번 답하면 분당 토큰 한도(rate limit)에 걸리기 쉽다. 자동 재시도로 순간적인
+        # 429를 흡수한다.
+        max_retries=3,
     )
 
 

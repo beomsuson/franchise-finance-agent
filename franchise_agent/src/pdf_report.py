@@ -69,7 +69,7 @@ def _draw_funding_chart(report: dict) -> str:
     costs = report["costs"]
     shortfall = report.get("shortfall")
 
-    fig, ax = plt.subplots(figsize=(7.2, 1.2), dpi=150)
+    fig, ax = plt.subplots(figsize=(7.2, 1.7), dpi=150)
     left = 0
     for label, value, color in [
         ("자기자본", funding["equity"], "#1565C0"),
@@ -80,12 +80,14 @@ def _draw_funding_chart(report: dict) -> str:
             ax.barh(["자금조달"], [value], left=left, color=color, label=label)
             left += value
     ax.set_xlabel("만원")
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.5), ncol=3, fontsize=9, frameon=False)
+    legend = ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.55), ncol=3, fontsize=9, frameon=False)
     ax.set_yticks([])
-    fig.tight_layout()
 
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    fig.savefig(tmp.name)
+    # tight_layout()은 bbox_to_anchor로 축 바깥에 둔 범례의 공간을 계산에 안 넣어서 xlabel과
+    # 겹쳤다 — savefig에 bbox_inches="tight"+bbox_extra_artists를 줘서 범례까지 포함해
+    # 여백을 다시 계산하게 한다.
+    fig.savefig(tmp.name, bbox_inches="tight", bbox_extra_artists=(legend,))
     plt.close(fig)
     return tmp.name
 

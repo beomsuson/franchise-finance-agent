@@ -1,7 +1,10 @@
+import threading
+import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
 
+import openai
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -21,7 +24,7 @@ from src.profile import (
 )
 from src.viz_theme import CATEGORICAL, INK, SCENARIO_COLORS, SCENARIO_LABELS, STATUS
 
-st.set_page_config(page_title="프랜차이즈 금융 에이전트", layout="wide")
+st.set_page_config(page_title="프랜차이즈 금융 에이전트", page_icon="🏪", layout="wide")
 
 if "app_stage" not in st.session_state:
     st.session_state.app_stage = "survey"
@@ -41,12 +44,21 @@ def _chart_layout(fig, **kwargs):
         plot_bgcolor=INK["surface"],
         paper_bgcolor=INK["surface"],
         font_color=INK["primary"],
+        font_size=13,
         legend_title_text="",
+        legend=dict(font_color=INK["secondary"]),
         margin=dict(l=10, r=10, t=30, b=10),
         **kwargs,
     )
-    fig.update_xaxes(gridcolor=INK["gridline"], linecolor=INK["baseline"])
-    fig.update_yaxes(gridcolor=INK["gridline"], linecolor=INK["baseline"])
+    # 큰 금액이 "2k"처럼 축약되면 만원 단위와 헷갈려서, 콤마 구분 전체 숫자로 표시한다.
+    fig.update_xaxes(
+        gridcolor=INK["gridline"], linecolor=INK["baseline"], tickformat=",",
+        tickfont_color=INK["secondary"], title_font_color=INK["secondary"],
+    )
+    fig.update_yaxes(
+        gridcolor=INK["gridline"], linecolor=INK["baseline"], tickformat=",",
+        tickfont_color=INK["secondary"], title_font_color=INK["secondary"],
+    )
     return fig
 
 
@@ -54,9 +66,49 @@ def render_progress(current: str):
     st.caption(" → ".join(f"**{v}**" if k == current else v for k, v in STAGE_LABELS.items()))
 
 
+AGENT_STEP_ESTIMATE_SECONDS = 18  # 지난 응답들 기준 대략치 — LLM 호출 수는 매번 달라서 정확한
+                                   # "남은 시간"은 알 수 없다. 90%까지만 이 추정치로 채우고,
+                                   # 실제로 끝날 때까지는 90%에서 멈춰서 기다리게 한다.
+
+
 def submit(value):
-    with st.spinner("에이전트가 처리하는 중..."):
-        st.session_state.graph_result = submit_answer(st.session_state.thread_id, value)
+    outcome: dict = {}
+    # st.session_state는 메인 스크립트 스레드에서만 접근 가능하다 — 아래 워커 스레드 안에서
+    # st.session_state.thread_id를 읽으면 AttributeError가 난다. 스레드 시작 전에 미리 값을
+    # 꺼내서 인자로 넘긴다.
+    thread_id = st.session_state.thread_id
+
+    def _worker():
+        try:
+            outcome["result"] = submit_answer(thread_id, value)
+        except openai.RateLimitError:
+            outcome["rate_limited"] = True
+        except Exception as e:  # noqa: BLE001 - 백그라운드 스레드 예외는 메인 스레드로 다시 던져야 함
+            outcome["error"] = e
+
+    thread = threading.Thread(target=_worker)
+    thread.start()
+
+    bar = st.progress(0, text="에이전트가 답변을 검토하는 중...")
+    elapsed = 0.0
+    while thread.is_alive():
+        time.sleep(0.3)
+        elapsed += 0.3
+        pct = min(int(elapsed / AGENT_STEP_ESTIMATE_SECONDS * 90), 90)
+        bar.progress(pct, text=f"에이전트가 답변을 검토하는 중... ({elapsed:.0f}초 경과)")
+    thread.join()
+    bar.progress(100, text="완료")
+
+    if outcome.get("rate_limited"):
+        st.error(
+            "지금 요청이 몰려서 잠시 처리할 수 없어요 (OpenAI 분당 사용량 한도 초과). "
+            "10~20초 정도 기다렸다가 방금 답변을 다시 제출해주세요."
+        )
+        st.stop()
+    if "error" in outcome:
+        raise outcome["error"]
+
+    st.session_state.graph_result = outcome["result"]
     st.rerun()
 
 
@@ -258,7 +310,7 @@ def render_candidates_preview(intr: dict):
             st.markdown(f"**후보 {i}. {c['brand_name']}** · {c.get('industry_middle', '-')}")
             cols = st.columns(3)
             cols[0].metric("창업비용", f"{c['maximum_startup_total']:,.0f}만원" if c.get("maximum_startup_total") is not None else "정보 없음")
-            cols[1].metric("평당(3.3㎡) 매출", f"{c['average_sales_per_3_3sqm']:,.0f}만원" if c.get("average_sales_per_3_3sqm") is not None else "정보 없음")
+            cols[1].metric("평당(3.3㎡) 연매출", f"{c['average_sales_per_3_3sqm']:,.0f}만원" if c.get("average_sales_per_3_3sqm") is not None else "정보 없음")
             cols[2].metric("가맹점 수", f"{c['store_count']:,.0f}개" if c.get("store_count") is not None else "정보 없음")
             if c.get("cost_is_estimated"):
                 st.warning("⚠️ 이 창업비용은 실제 값과 차이가 있을 수 있어 재확인이 필요합니다.")
@@ -312,11 +364,25 @@ def render_brand_detail(c: dict):
             st.caption(f"· {item['label']}: {item['text']}")
 
 
-def render_agent_question(intr: dict):
+def render_agent_question(intr: dict, result: dict):
     st.header("③ 에이전트가 직접 조사하며 질문 중")
     render_progress("risk")
     st.caption("🤖 에이전트가 후보 브랜드를 조사하다가 고객 판단이 필요해서 직접 묻는 질문입니다.")
     st.subheader(intr["text"])
+
+    # "어느 후보를 더 선호하는지" 묻는 질문에 자유 텍스트로 답하면(예: "후보2가 매출위험
+    # 수용도가 낮아서 좋아요"), 에이전트(재실행 시 전체 대화를 다시 도는 구조)가 그 답을 보고
+    # 다음 행동을 결정할 때 재실행마다 살짝 다르게 판단할 여지가 커져서, 질문 순서가 어긋나며
+    # select_brand_node에서 엉뚱한 값이 브랜드 식별자로 잘못 쓰이는 버그로 이어진 적이 있다.
+    # 선호도 질문만큼은 답을 "후보 N" 같은 고정된 문자열로 제한해서 이 위험을 없앤다.
+    candidates = result.get("model_candidates") or []
+    if "선호" in intr["text"] and candidates:
+        options = [f"후보 {i + 1}" for i in range(len(candidates))]
+        choice = st.radio("가장 끌리는 후보를 선택하세요", options, key=f"agentq_pref_{intr['question_id']}")
+        if st.button("답변하고 계속 →", use_container_width=True):
+            submit(choice)
+        return
+
     st.caption("감수 가능 여부를 묻는 질문이면 슬라이더로, 후보 선호도처럼 척도로 답하기 애매하면 아래 텍스트로 답하세요.")
     value = st.slider("0 = 전혀 감수 불가 · 10 = 충분히 감수 가능", 0, 10, 5, key=f"agentq_slider_{intr['question_id']}")
     text_value = st.text_input("또는 직접 답변 입력 (예: '후보 2가 더 좋아요, 이유는...')", key=f"agentq_text_{intr['question_id']}")
@@ -344,7 +410,7 @@ def render_select_brand(result: dict, intr: dict):
                 "brand_name": "브랜드",
                 "brand_risk_score": "브랜드 리스크",
                 "maximum_startup_total": "창업비용(만원)",
-                "average_sales_per_3_3sqm": "평당(3.3㎡) 매출(만원)",
+                "average_sales_per_3_3sqm": "평당(3.3㎡) 연매출(만원)",
                 "cost_is_estimated": "창업비용 신뢰도",
             }
         ),
@@ -455,7 +521,7 @@ def render_agent():
 
     dispatch = {
         "candidates_preview": lambda: render_candidates_preview(intr),
-        "agent_question": lambda: render_agent_question(intr),
+        "agent_question": lambda: render_agent_question(intr, result),
         "select_brand": lambda: render_select_brand(result, intr),
         "loop_decision": lambda: render_loop_decision(result, intr),
     }

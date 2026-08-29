@@ -1,0 +1,13 @@
+streamlit
+pandas
+sqlalchemy
+python-dotenv
+openai
+langchain-core
+langchain-openai
+langgraph
+catboost
+joblib
+fpdf2
+matplotlib
+plotly

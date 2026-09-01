@@ -62,6 +62,18 @@ def _chart_layout(fig, **kwargs):
     return fig
 
 
+def md_safe(text: str) -> str:
+    """LLM/DB에서 온 자유 텍스트를 st.markdown류 위젯에 보여줄 때 쓰는 이스케이프.
+    "10~25%"처럼 범위 표시에 물결표(~)가 여러 번 나오면, Streamlit의 마크다운 파서가
+    그 사이 전체를 취소선(~text~)으로 잘못 렌더링하는 문제가 있었다 - *, _, ` 도 같은
+    이유로 이스케이프해서 서식 문자가 우연히 짝지어지는 걸 막는다."""
+    if not text:
+        return text
+    for ch in ("~", "*", "_", "`"):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 def render_progress(current: str):
     st.caption(" → ".join(f"**{v}**" if k == current else v for k, v in STAGE_LABELS.items()))
 
@@ -315,7 +327,7 @@ def render_candidates_preview(intr: dict):
             if c.get("cost_is_estimated"):
                 st.warning("⚠️ 이 창업비용은 실제 값과 차이가 있을 수 있어 재확인이 필요합니다.")
             if c.get("model_reason"):
-                st.caption(f"1차 선정 이유: {c['model_reason']}")
+                st.caption(f"1차 선정 이유: {md_safe(c['model_reason'])}")
 
     st.markdown("#### 이제 이 후보들의 정보공개서를 근거로 감수질문을 시작합니다")
     if st.button("③ 감수질문 시작하기 →", use_container_width=True):
@@ -325,9 +337,9 @@ def render_candidates_preview(intr: dict):
 def render_brand_detail(c: dict):
     """추천 근거 + 정보공개서 상세(비용/매출/지원제도/계약위험/운영부담)를 사람이 읽기 쉽게 보여준다."""
     if c.get("agent_reasoning"):
-        st.markdown(f"**에이전트 판단:** {c['agent_reasoning']}")
+        st.markdown(f"**에이전트 판단:** {md_safe(c['agent_reasoning'])}")
     for reason in c.get("fit_reasons", []):
-        st.markdown(f"- {reason}")
+        st.markdown(f"- {md_safe(reason)}")
 
     detail = c.get("detail")
     if not detail:
@@ -368,7 +380,7 @@ def render_agent_question(intr: dict, result: dict):
     st.header("③ 에이전트가 직접 조사하며 질문 중")
     render_progress("risk")
     st.caption("🤖 에이전트가 후보 브랜드를 조사하다가 고객 판단이 필요해서 직접 묻는 질문입니다.")
-    st.subheader(intr["text"])
+    st.subheader(md_safe(intr["text"]))
 
     # "어느 후보를 더 선호하는지" 묻는 질문에 자유 텍스트로 답하면(예: "후보2가 매출위험
     # 수용도가 낮아서 좋아요"), 에이전트(재실행 시 전체 대화를 다시 도는 구조)가 그 답을 보고
@@ -450,7 +462,7 @@ def render_loop_decision(result: dict, intr: dict):
     report = result["report"]
     st.subheader(candidate["brand_name"])
     if result.get("report_summary"):
-        st.info(result["report_summary"])
+        st.info(md_safe(result["report_summary"]))
 
     with st.expander(f"왜 이 브랜드인가요? (리스크 {candidate.get('brand_risk_score')}점)", expanded=True):
         render_brand_detail(candidate)

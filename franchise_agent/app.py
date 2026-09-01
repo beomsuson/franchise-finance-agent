@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 import uuid
@@ -60,6 +61,16 @@ def _chart_layout(fig, **kwargs):
         tickfont_color=INK["secondary"], title_font_color=INK["secondary"],
     )
     return fig
+
+
+def format_agent_question(text: str) -> str:
+    """감수질문이 후보 여러 개 정보를 한 문단에 몰아넣어서(예: "후보 1은 ~. 후보 2는 ~.")
+    한눈에 안 들어온다는 피드백 — "후보 N" 등장 시점마다 새 문단으로 끊어서 후보별로
+    줄바꿈되게 한다."""
+    if not text:
+        return text
+    parts = re.split(r"(?=후보\s?\d)", text)
+    return "\n\n".join(p.strip() for p in parts if p.strip())
 
 
 def md_safe(text: str) -> str:
@@ -139,49 +150,62 @@ def render_survey():
     # 선택 즉시 아래 대출 상세 입력칸을 비활성화하려면(폼 안 위젯은 제출 전까지 서로 반응하지
     # 않음) 폼 자체를 없애고 일반 위젯 + 버튼으로 구성하는 게 제일 간단하다.
 
-    st.subheader("희망 업종")
-    desired_industries = st.multiselect(
-        "업종(중분류, 최대 3개까지 선택 가능)", model_industries(), max_selections=3
-    )
+    # 데스크탑(wide 레이아웃)에서는 입력창 하나하나가 화면 폭 전체로 늘어나 옆으로 너무 길어
+    # 한눈에 안 들어온다는 피드백 — 설문 영역만 가운데 좁은 열로 제한한다(모바일은 컬럼이
+    # 알아서 세로로 쌓이는 Streamlit 기본 동작이라 영향 없음).
+    _left, mid, _right = st.columns([1, 2, 1])
+    with mid:
+        st.subheader("희망 업종")
+        desired_industries = st.multiselect(
+            "업종(중분류, 최대 3개까지 선택 가능)", model_industries(), max_selections=3
+        )
 
-    st.subheader("1. 창업 자금")
-    liquid_capital = st.number_input("즉시(1개월 이내) 가용 총자금 — 부동산·보증금 제외 (만원)", min_value=0, value=8000, step=100)
-    operating_reserve = st.number_input("운영 예비자금 (만원)", min_value=0, value=2000, step=100)
+        st.subheader("1. 창업 자금")
+        c1, c2 = st.columns(2)
+        liquid_capital = c1.number_input("즉시(1개월 이내) 가용 총자금 — 부동산·보증금 제외 (만원)", min_value=0, value=8000, step=100)
+        operating_reserve = c2.number_input("운영 예비자금 (만원)", min_value=0, value=2000, step=100)
 
-    st.subheader("2. 대출")
-    loan_status = st.selectbox("대출 가능 여부", LOAN_STATUS_OPTIONS, key="loan_status_select")
-    no_loan = loan_status != "대출 가능"
-    desired_amount = st.number_input("희망 대출액 (만원)", min_value=0, value=4000, step=100, disabled=no_loan)
-    expected_rate = st.number_input("예상금리 (연 %)", min_value=0.0, value=5.5, step=0.1, disabled=no_loan)
-    repayment_months = st.number_input("상환기간 (개월)", min_value=0, value=60, step=6, disabled=no_loan)
-    repayment_method = st.selectbox("상환방식", REPAYMENT_METHOD_OPTIONS, disabled=no_loan)
+        st.subheader("2. 대출")
+        loan_status = st.selectbox("대출 가능 여부", LOAN_STATUS_OPTIONS, key="loan_status_select")
+        no_loan = loan_status != "대출 가능"
+        c1, c2 = st.columns(2)
+        desired_amount = c1.number_input("희망 대출액 (만원)", min_value=0, value=4000, step=100, disabled=no_loan)
+        expected_rate = c2.number_input("예상금리 (연 %)", min_value=0.0, value=5.5, step=0.1, disabled=no_loan)
+        c1, c2 = st.columns(2)
+        repayment_months = c1.number_input("상환기간 (개월)", min_value=0, value=60, step=6, disabled=no_loan)
+        repayment_method = c2.selectbox("상환방식", REPAYMENT_METHOD_OPTIONS, disabled=no_loan)
 
-    existing_debt_total = st.number_input("현재 부채 총액 (만원)", min_value=0, value=0, step=100)
-    existing_debt_monthly = st.number_input("기존 부채 매월 납부 원리금 (만원)", min_value=0, value=0, step=10)
+        c1, c2 = st.columns(2)
+        existing_debt_total = c1.number_input("현재 부채 총액 (만원)", min_value=0, value=0, step=100)
+        existing_debt_monthly = c2.number_input("기존 부채 매월 납부 원리금 (만원)", min_value=0, value=0, step=10)
 
-    st.subheader("3. 생계비")
-    min_living = st.number_input("월 최소 생활비 (만원)", min_value=0, value=250, step=10)
-    maintained_income = st.number_input("창업 후에도 유지되는 가구 월 세후소득 (만원)", min_value=0, value=200, step=10)
+        st.subheader("3. 생계비")
+        c1, c2 = st.columns(2)
+        min_living = c1.number_input("월 최소 생활비 (만원)", min_value=0, value=250, step=10)
+        maintained_income = c2.number_input("창업 후에도 유지되는 가구 월 세후소득 (만원)", min_value=0, value=200, step=10)
 
-    st.caption("향후 3년 내 예정된 큰 지출 (선택)")
-    expenses_df = st.data_editor(
-        pd.DataFrame(columns=["목적", "예상금액(만원)", "예상시기"]),
-        num_rows="dynamic",
-        key="expenses_editor",
-        use_container_width=True,
-    )
+        st.caption("향후 3년 내 예정된 큰 지출 (선택)")
+        expenses_df = st.data_editor(
+            pd.DataFrame(columns=["목적", "예상금액(만원)", "예상시기"]),
+            num_rows="dynamic",
+            key="expenses_editor",
+            use_container_width=True,
+        )
 
-    st.subheader("4. 기타 사항")
-    planned_period = st.selectbox("새 점포 운영 계획 기간 *", OPERATION_PERIOD_OPTIONS)
-    target_income = st.number_input("목표 세후 월소득 (만원) *", min_value=0, value=0, step=10)
-    target_payback_years = st.number_input("목표 투자금 회수기간 (년) *", min_value=0.0, value=0.0, step=0.5)
-    startup_timing = st.selectbox("실제 창업 가능 시기", STARTUP_TIMING_OPTIONS)
-    existing_store_count = st.number_input("현재 운영 중인 프랜차이즈 점포 수", min_value=0, value=0, step=1)
-    existing_store_cashflow = st.number_input(
-        "기존 점포 월평균 순현금흐름 (만원, 적자면 음수)", value=0, step=10, disabled=existing_store_count == 0
-    )
+        st.subheader("4. 기타 사항")
+        c1, c2 = st.columns(2)
+        planned_period = c1.selectbox("새 점포 운영 계획 기간 *", OPERATION_PERIOD_OPTIONS)
+        target_income = c2.number_input("목표 세후 월소득 (만원) *", min_value=0, value=0, step=10)
+        c1, c2 = st.columns(2)
+        target_payback_years = c1.number_input("목표 투자금 회수기간 (년) *", min_value=0.0, value=0.0, step=0.5)
+        startup_timing = c2.selectbox("실제 창업 가능 시기", STARTUP_TIMING_OPTIONS)
+        c1, c2 = st.columns(2)
+        existing_store_count = c1.number_input("현재 운영 중인 프랜차이즈 점포 수", min_value=0, value=0, step=1)
+        existing_store_cashflow = c2.number_input(
+            "기존 점포 월평균 순현금흐름 (만원, 적자면 음수)", value=0, step=10, disabled=existing_store_count == 0
+        )
 
-    submitted = st.button("에이전트 시작 →", use_container_width=True)
+        submitted = st.button("에이전트 시작 →", use_container_width=True)
 
     if submitted:
         missing = []
@@ -317,15 +341,23 @@ def render_candidates_preview(intr: dict):
     candidates = intr["candidates"]
     st.caption(f"🤖 추천 모델이 고객 프로필을 보고 {len(candidates)}개 브랜드를 골랐습니다.")
 
+    # 예전엔 후보마다 반복해서 경고를 띄웠는데, 후보가 여러 개면 같은 문장이 계속 반복돼서
+    # 눈에 안 들어온다는 피드백 — 추정값인 후보가 하나라도 있으면 화면 상단에 한 번만 고정 표시하고,
+    # 카드 안에는 어떤 후보가 해당되는지 표시만 짧게 남긴다.
+    if any(c.get("cost_is_estimated") for c in candidates):
+        st.warning("⚠️ 이 창업비용은 실제 값과 차이가 있을 수 있어 재확인이 필요합니다.")
+
     for i, c in enumerate(candidates, 1):
         with st.container(border=True):
+            estimated_tag = " ⚠️추정값" if c.get("cost_is_estimated") else ""
             st.markdown(f"**후보 {i}. {c['brand_name']}** · {c.get('industry_middle', '-')}")
             cols = st.columns(3)
-            cols[0].metric("창업비용", f"{c['maximum_startup_total']:,.0f}만원" if c.get("maximum_startup_total") is not None else "정보 없음")
+            cols[0].metric(
+                "창업비용" + estimated_tag,
+                f"{c['maximum_startup_total']:,.0f}만원" if c.get("maximum_startup_total") is not None else "정보 없음",
+            )
             cols[1].metric("평당(3.3㎡) 연매출", f"{c['average_sales_per_3_3sqm']:,.0f}만원" if c.get("average_sales_per_3_3sqm") is not None else "정보 없음")
             cols[2].metric("가맹점 수", f"{c['store_count']:,.0f}개" if c.get("store_count") is not None else "정보 없음")
-            if c.get("cost_is_estimated"):
-                st.warning("⚠️ 이 창업비용은 실제 값과 차이가 있을 수 있어 재확인이 필요합니다.")
             if c.get("model_reason"):
                 st.caption(f"1차 선정 이유: {md_safe(c['model_reason'])}")
 
@@ -380,7 +412,8 @@ def render_agent_question(intr: dict, result: dict):
     st.header("③ 에이전트가 직접 조사하며 질문 중")
     render_progress("risk")
     st.caption("🤖 에이전트가 후보 브랜드를 조사하다가 고객 판단이 필요해서 직접 묻는 질문입니다.")
-    st.subheader(md_safe(intr["text"]))
+    for paragraph in format_agent_question(intr["text"]).split("\n\n"):
+        st.markdown(f"**{md_safe(paragraph)}**")
 
     # "어느 후보를 더 선호하는지" 묻는 질문에 자유 텍스트로 답하면(예: "후보2가 매출위험
     # 수용도가 낮아서 좋아요"), 에이전트(재실행 시 전체 대화를 다시 도는 구조)가 그 답을 보고

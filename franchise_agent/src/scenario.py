@@ -54,6 +54,12 @@ def _parse_amount_raw(raw: Optional[str], unit: Optional[str]) -> Optional[float
     표기가 없으면 금액으로 보지 않고 버린다 — 오탐(false positive)을 피하기 위함이다.
     단위가 NULL이면 db.py의 다른 곳과 동일하게 THOUSAND_KRW로 가정한다(전체 DB 조사 결과
     NULL 단위의 약 82%가 실제로는 천원 단위였음)."""
+    if raw is None or (isinstance(raw, float) and raw != raw):  # None 또는 NaN
+        return None
+    # SQLite로 내보낼 때 컬럼 값이 전부 숫자처럼 보이면 pandas가 문자열 대신 float으로
+    # 잘못 추론해 저장하는 경우가 있다(MySQL 원본은 TEXT 컬럼인데 배포판만 이 문제가 남).
+    # re.sub는 문자열만 받으므로, 숫자로 들어와도 항상 문자열로 변환한 뒤 처리한다.
+    raw = str(raw)
     if not raw:
         return None
     cleaned = _WS_BETWEEN_DIGITS_RE.sub("", raw)
